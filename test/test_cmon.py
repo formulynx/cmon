@@ -82,12 +82,11 @@ def test_reducer_order_guard():
     assert "a" in S, "stale SessionEnd removed a live session"
 
 
-def test_reducer_waiting_vs_teammates():
+def test_reducer_waiting_is_running():
     S = {}
     m.reduce(S, ev("a", "UserPromptSubmit")); m.reduce(S, ev("a", "Stop", bg=1)); assert S["a"]["status"] == "waiting"
-    assert m.ws_state(S, {"W"}) == "idle", "a lone waiter is idle"
-    m.reduce(S, ev("t", "UserPromptSubmit")); assert m.ws_state(S, {"W"}) == "running"
-    m.reduce(S, ev("t", "Stop", bg=0));       assert m.ws_state(S, {"W"}) == "idle"
+    assert m.ws_state(S, {"W"}) == "running", "a lone session parked on a background shell is not finished"
+    m.reduce(S, ev("a", "Stop", bg=0));       assert m.ws_state(S, {"W"}) == "idle"
     m.reduce(S, ev("t", "PreToolUse", tool="AskUserQuestion")); assert m.ws_state(S, {"W"}) == "needs_input"
 
 

@@ -77,9 +77,10 @@ idle); Ctrl-C to stop.
 | SessionEnd, or the agent process (hook's parent pid) is gone | removed |
 
 Workspace state = needs_input if any session needs input, else running if any
-session is running, else idle (a `waiting` session is idle unless another
-session in the same set is running: teammates are tracked as their own
-sessions, so a lead parked on them is not work in flight). Each hook call
+session is running or waiting (a background shell, monitor, subagent or
+scheduled wakeup will resume a waiting session; teammates are tracked as
+their own sessions and are not counted as the lead's background work), else
+idle. Each hook call
 reconciles every workspace and group: it sets the sidebar lane (`working` /
 `needs-attention` / `done` / `auto`) of any workspace whose lane changed, and
 sends a `cmux notify` to the group anchor (or the workspace itself when
@@ -109,6 +110,9 @@ workspace, so "idle" means all of them are idle.
   `running` until its next event.
 - Codex hooks fire only once a thread exists: a TUI sitting at its first prompt
   is not visible until the first message is sent.
+- A background shell the agent started and never waits on (a dev server left
+  running) keeps its session `waiting`, so the workspace never reports idle
+  until that task ends.
 - Each hook call costs about 0.1 s (python startup); hooks are async so the
   agent is not delayed.
 

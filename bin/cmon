@@ -10,8 +10,8 @@ on screen and redraws on each hook event (kqueue, no polling).
 
 Session status: running | waiting (Stop with non-teammate background work) |
 needs_input (AskUserQuestion / ExitPlanMode / PermissionRequest) | idle.
-Workspace state: needs_input > running > idle > none. A `waiting` session only
-counts as running while some other session in the same set is running.
+Workspace state: needs_input > running > idle > none. `waiting` counts as
+running: teammates are excluded from the background work that produces it.
 """
 import fcntl
 import json
@@ -70,9 +70,9 @@ def ws_state(sessions, ws_ids):
         return "none"
     if "needs_input" in sts:
         return "needs_input"
-    if "running" in sts:
-        return "running"
-    return "idle"  # only idle/waiting left: nothing can wake a waiter but another session
+    if "running" in sts or "waiting" in sts:
+        return "running"  # a waiter's background shell, monitor or wakeup will resume it
+    return "idle"
 
 
 def alive(pid):
