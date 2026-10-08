@@ -206,9 +206,13 @@ def hook(src):
     if ev["event"] in ("SessionStart", "UserPromptSubmit") and raw.get("transcript_path"):
         ev["name"] = agent_name(raw["transcript_path"])
     os.makedirs(DIR, exist_ok=True)
+    warm = load()
+    refresh(warm)  # query cmux (when the cache is stale) before taking the lock
     with open(os.path.join(DIR, "lock"), "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         state = load()
+        if time.time() - (state.get("cmux") or {}).get("ts", 0) >= CMUX_TTL:
+            state["cmux"] = warm["cmux"]  # cmux was queried before taking the lock
         reduce(state["sessions"], ev)
         drop_dead(state["sessions"])
         cmds = reconcile(state)

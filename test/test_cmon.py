@@ -138,13 +138,15 @@ def test_hook_parallel_no_lost_updates():
 
 
 def test_hook_cmux_runs_outside_lock():
-    d = tempfile.mkdtemp(); env = stub(d, sleep=1)
-    p1 = fire(env, {"session_id": "h1", "hook_event_name": "UserPromptSubmit"}, wait=False)
-    time.sleep(0.3)
+    d = tempfile.mkdtemp(); env = stub(d)
+    fire(env, {"session_id": "h0", "hook_event_name": "Stop"})  # warm the cmux cache and the lanes
+    os.replace(os.path.join(d, "cmux"), os.path.join(d, "cmux.fast")); stub(d, sleep=1)
+    p1 = fire(env, {"session_id": "h1", "hook_event_name": "UserPromptSubmit"}, wait=False)  # sets 1 lane: 1 s
+    time.sleep(0.4)
     t0 = time.time(); fire(env, {"session_id": "h2", "hook_event_name": "UserPromptSubmit"}); dt = time.time() - t0
     p1.stdout.read(); p1.wait()
-    # h2 must not wait for h1's slow cmux calls (lock released before side effects); it only pays its own
-    assert dt < 2.5, "second hook waited %.1fs behind the first hook's cmux calls" % dt
+    # h2 has nothing to run; it must not wait behind h1's cmux call (lock released before side effects)
+    assert dt < 0.8, "second hook waited %.1fs behind the first hook's cmux calls" % dt
 
 
 # ------------------------------------------------------------------ status / watch
