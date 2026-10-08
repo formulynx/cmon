@@ -115,6 +115,25 @@ def refresh(state, force=False):
     return c
 
 
+def ws_of_pid(pid):
+    """Workspace id of the cmux surface whose process tree holds pid, or None."""
+    try:
+        top = json.loads(cmux("--json", "top", "--all", "--processes"))
+    except ValueError:
+        return None
+
+    def holds(nodes):
+        return any(n.get("pid") == pid or holds(n.get("children") or []) for n in nodes)
+
+    for win in top.get("windows") or []:
+        for ws in win.get("workspaces") or []:
+            for pane in ws.get("panes") or []:
+                for surf in pane.get("surfaces") or []:
+                    if holds(surf.get("processes") or []):
+                        return ws.get("id")
+    return None
+
+
 def targets(state):
     """[(notify_ws, member_ids)] : every group, plus each ungrouped workspace on its own."""
     c = refresh(state)
@@ -201,12 +220,21 @@ def hook(src):
           "ws": os.environ.get("CMUX_WORKSPACE_ID"), "session": raw.get("session_id"),
           "event": raw.get("hook_event_name"), "tool": raw.get("tool_name"), "pid": os.getppid(),
           "bg": len(bg) + len(raw.get("session_crons") or [])}
-    if not ev["ws"] or not ev["session"]:
+    if not ev["session"]:
+        return
+    os.makedirs(DIR, exist_ok=True)
+    warm = load()
+    if not ev["ws"]:
+        # No pane env (a Codex app-server runs hooks with a scrubbed environment):
+        # reuse the session's known workspace, else ask cmux which pane owns our parent.
+        known = warm["sessions"].get(ev["session"], {}).get("ws")
+        ev["ws"] = known or ws_of_pid(ev["pid"])
+    if not ev["ws"]:  # keep the last one for troubleshooting
+        with open(os.path.join(DIR, "last-unattributed.json"), "w") as f:
+            json.dump(dict(ev, cwd=raw.get("cwd"), env_keys=sorted(k for k in os.environ if k.startswith("CMUX_"))), f)
         return
     if ev["event"] in ("SessionStart", "UserPromptSubmit") and raw.get("transcript_path"):
         ev["name"] = agent_name(raw["transcript_path"])
-    os.makedirs(DIR, exist_ok=True)
-    warm = load()
     refresh(warm)  # query cmux (when the cache is stale) before taking the lock
     with open(os.path.join(DIR, "lock"), "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)

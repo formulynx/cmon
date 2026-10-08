@@ -24,8 +24,9 @@ test/test_agent_monitor.py              self-check: python3 test/test_agent_moni
 test/test_install.sh                    self-check: bash test/test_install.sh
 ```
 
-State dir: `~/.cmuxterm/cmon/` (`state.json` plus a lock file; override
-with `CMON_DIR`). Nothing grows: every hook call rewrites `state.json`
+State dir: `~/.cmuxterm/cmon/` (`state.json`, a lock file, and
+`last-unattributed.json`, the most recent hook event that arrived without a
+`CMUX_WORKSPACE_ID`; override with `CMON_DIR`). Nothing grows: every hook call rewrites `state.json`
 pruned to the workspaces and groups cmux currently reports.
 
 ## Install
@@ -97,11 +98,17 @@ workspace, so "idle" means all of them are idle.
 
 - cmux keeps one unread notification per surface; a second notification within
   seconds replaces the first.
-- A Codex launched through `codex app-server` / `codex --remote` runs hooks in
-  the server process; verify it logs events before relying on it.
+- A Codex thread driven through `codex app-server` / `codex --remote` runs its
+  hooks with a scrubbed environment (no `CMUX_*` variables). cmon then asks
+  cmux which pane owns the hook's parent process (`cmux --json top`) and
+  attributes the session to that pane's workspace, once per session. A hook
+  whose parent is not in any cmux pane is dropped and recorded in
+  `last-unattributed.json`.
 - A crashed agent is removed at the next hook event from any session, when its
   pid is found dead. A user interrupt (Esc) emits no hook, so a session stays
   `running` until its next event.
+- Codex hooks fire only once a thread exists: a TUI sitting at its first prompt
+  is not visible until the first message is sent.
 - Each hook call costs about 0.1 s (python startup); hooks are async so the
   agent is not delayed.
 

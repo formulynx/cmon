@@ -21,7 +21,8 @@ def stub(d, sleep=0, fail=False):
         body += "sleep %s\n" % sleep
     if fail:
         body += "exit 1\n"
-    body += "[ \"$1\" = rpc ] && echo '%s'\n[ \"$2\" = workspace ] && echo '%s'\nexit 0\n" % (GROUPS, NAMES)
+    body += "[ \"$1\" = rpc ] && echo '%s'\n[ \"$2\" = workspace ] && echo '%s'\n" % (GROUPS, NAMES)
+    body += "[ \"$2\" = top ] && echo '{\"windows\":[{\"workspaces\":[{\"id\":\"W\",\"panes\":[{\"surfaces\":[{\"processes\":[{\"pid\":1,\"children\":[{\"pid\":'\"$CMON_TEST_PPID\"'}]}]}]}]}]}]}'\nexit 0\n"
     p = os.path.join(d, "cmux"); open(p, "w").write(body); os.chmod(p, 0o755)
     return dict(os.environ, CMON_DIR=d, CMUX_BUNDLED_CLI_PATH=p)
 
@@ -123,7 +124,14 @@ def test_hook_transitions_and_pruning():
 def test_hook_outside_cmux_and_cmux_failure():
     d = tempfile.mkdtemp(); env = stub(d)
     fire(env, {"session_id": "h1", "hook_event_name": "UserPromptSubmit"}, ws=None)
-    assert not os.path.exists(os.path.join(d, "state.json")), "no workspace id: nothing written"
+    assert not os.path.exists(os.path.join(d, "state.json")), "unknown pane: nothing written"
+    assert json.load(open(os.path.join(d, "last-unattributed.json")))["session"] == "h1", "unattributed event recorded for troubleshooting"
+    # scrubbed env (Codex app-server): the pane owning the hook's parent pid resolves the workspace
+    env2 = dict(env, CMON_TEST_PPID=str(os.getpid()))
+    fire(env2, {"session_id": "h2", "hook_event_name": "UserPromptSubmit"}, ws=None)
+    assert state(d)["sessions"]["h2"]["ws"] == "W", "workspace resolved from parent pid via cmux top"
+    fire(env, {"session_id": "h2", "hook_event_name": "Stop"}, ws=None)  # later events reuse the known workspace
+    assert state(d)["sessions"]["h2"]["status"] == "idle"
     d = tempfile.mkdtemp(); env = stub(d, fail=True)
     fire(env, {"session_id": "h1", "hook_event_name": "UserPromptSubmit"})
     assert state(d)["sessions"]["h1"]["status"] == "running", "state kept when cmux fails"
