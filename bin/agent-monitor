@@ -18,6 +18,7 @@ import json
 import os
 import re
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -216,6 +217,17 @@ def hook(src):
         cmux(*args)
 
 
+BG = {"needs_input": 160, "running": 25, "idle": 28, "none": 238}  # 256-color background per group state
+
+
+def group_line(name, state):
+    """Group header; a full-width colored bar when stdout is a terminal."""
+    text = "%s  [%s]" % (name, state)
+    if not sys.stdout.isatty():
+        return text
+    return "\x1b[48;5;%dm\x1b[97m%s\x1b[0m" % (BG[state], pad(text, shutil.get_terminal_size().columns))
+
+
 def pad(text, width):
     cols = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
     return text + " " * max(width - cols, 0)
@@ -234,7 +246,7 @@ def status():
     if rest:
         trees.append(("(ungrouped)", rest, rest))
     for name, members, all_ids in trees:
-        print("%s  [%s]" % (name, ws_state(sessions, set(all_ids))))
+        print(group_line(name, ws_state(sessions, set(all_ids))))
         for i, w in enumerate(members):
             last_ws = i == len(members) - 1
             print("  %s %s %-11s %s" % ("└─" if last_ws else "├─", pad(names.get(w, w[:8]), 24),
