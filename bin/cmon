@@ -1,11 +1,11 @@
 #!/usr/bin/python3
-"""agent-monitor: per-cmux-workspace "all agents finished / input needed" notifier.
+"""cmon (Cmux agent MONitor): per-cmux-workspace "all agents finished / input needed" notifier.
 
-No daemon. Each Claude Code / Codex hook invocation runs `agent-monitor hook <src>`,
-which folds the event into ~/.cmuxterm/agent-monitor/state.json under a file lock,
+No daemon. Each Claude Code / Codex hook invocation runs `cmon hook <src>`,
+which folds the event into ~/.cmuxterm/cmon/state.json under a file lock,
 reconciles every known workspace and workspace group against cmux, and runs the
 `cmux notify` / `cmux workspace status set` commands for whatever changed.
-`agent-monitor status` prints the current tree; `agent-monitor watch` keeps it
+`cmon status` prints the current tree; `cmon watch` keeps it
 on screen and redraws on each hook event (kqueue, no polling).
 
 Session status: running | waiting (Stop with non-teammate background work) |
@@ -24,7 +24,7 @@ import sys
 import time
 import unicodedata
 
-DIR = os.environ.get("AGENT_MONITOR_DIR", os.path.expanduser("~/.cmuxterm/agent-monitor"))
+DIR = os.environ.get("CMON_DIR", os.path.expanduser("~/.cmuxterm/cmon"))
 CMUX = os.environ.get("CMUX_BUNDLED_CLI_PATH", "cmux")
 INPUT_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 LANE = {"needs_input": "needs-attention", "running": "working", "idle": "done", "none": "auto"}
@@ -278,7 +278,7 @@ def main():
         try:
             hook(sys.argv[2] if len(sys.argv) > 2 else "claude")
         except Exception as exc:  # never fail the agent's hook
-            print("agent-monitor: %r" % exc, file=sys.stderr)
+            print("cmon: %r" % exc, file=sys.stderr)
         print("{}")
     elif cmd == "status":
         status()

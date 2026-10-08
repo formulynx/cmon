@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Self-check for bin/agent-monitor. Run: python3 test/test_agent_monitor.py
+"""Self-check for bin/cmon. Run: python3 test/test_agent_monitor.py
 
 Plain asserts, no framework. Each test_* function gets a fresh temp state dir and a
 stub cmux that records its argv to <dir>/calls and answers the two list commands.
 """
 import importlib.machinery, importlib.util, json, os, subprocess, tempfile, time
 
-SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "agent-monitor")
+SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "cmon")
 _loader = importlib.machinery.SourceFileLoader("m", SCRIPT)
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("m", _loader)); _loader.exec_module(m)
 
@@ -23,7 +23,7 @@ def stub(d, sleep=0, fail=False):
         body += "exit 1\n"
     body += "[ \"$1\" = rpc ] && echo '%s'\n[ \"$2\" = workspace ] && echo '%s'\nexit 0\n" % (GROUPS, NAMES)
     p = os.path.join(d, "cmux"); open(p, "w").write(body); os.chmod(p, 0o755)
-    return dict(os.environ, AGENT_MONITOR_DIR=d, CMUX_BUNDLED_CLI_PATH=p)
+    return dict(os.environ, CMON_DIR=d, CMUX_BUNDLED_CLI_PATH=p)
 
 
 def fire(env, payload, ws="W", wait=True):

@@ -1,16 +1,16 @@
 #!/bin/bash
 # install.sh [uninstall [--purge]]
-# Links bin/agent-monitor into ~/.local/bin and adds its hook entries to
+# Links bin/cmon into ~/.local/bin and adds its hook entries to
 # ~/.claude/settings.json and ~/.codex/hooks.json (idempotent: existing
-# agent-monitor entries are replaced, everything else is kept). `uninstall`
+# cmon entries are replaced, everything else is kept). `uninstall`
 # reverses it; `--purge` also deletes the state dir. macOS + jq required.
 set -euo pipefail
 cd "$(dirname "$0")"
-BIN="$HOME/.local/bin/agent-monitor"
+BIN="$HOME/.local/bin/cmon"
 CLAUDE="$HOME/.claude/settings.json"
 CODEX="$HOME/.codex/hooks.json"
-STATE="$HOME/.cmuxterm/agent-monitor"
-CMD='~/.local/bin/agent-monitor hook'
+STATE="$HOME/.cmuxterm/cmon"
+CMD='~/.local/bin/cmon hook'
 CLAUDE_EVENTS='"SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","PermissionRequest","SubagentStart","SubagentStop","Stop"'
 CODEX_EVENTS='"SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","PermissionRequest","Stop"'
 
@@ -18,7 +18,7 @@ CODEX_EVENTS='"SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","Perm
 command -v jq >/dev/null || { echo "jq is required (brew install jq)"; exit 1; }
 
 # strip every hook group whose command is ours; keep the rest untouched
-STRIP='.hooks |= with_entries(.value |= map(select(((.hooks // []) | any(.command | test("agent-monitor hook"))) | not)))'
+STRIP='.hooks |= with_entries(.value |= map(select(((.hooks // []) | any(.command | test("(agent-monitor|cmon) hook"))) | not)))'
 
 write() {  # write <file> <jq-filter> : back up, apply, replace atomically
   local f="$1" filter="$2" tmp
@@ -37,7 +37,10 @@ write() {  # write <file> <jq-filter> : back up, apply, replace atomically
 
 install() {
   mkdir -p "$(dirname "$BIN")"
-  ln -sfn "$PWD/bin/agent-monitor" "$BIN"; echo "linked $BIN"
+  # migrate from the pre-rename install (agent-monitor)
+  [ -L "$HOME/.local/bin/agent-monitor" ] && rm "$HOME/.local/bin/agent-monitor" && echo "removed $HOME/.local/bin/agent-monitor"
+  [ -d "$HOME/.cmuxterm/agent-monitor" ] && rm -rf "$HOME/.cmuxterm/agent-monitor" && echo "removed $HOME/.cmuxterm/agent-monitor"
+  ln -sfn "$PWD/bin/cmon" "$BIN"; echo "linked $BIN"
   write "$CLAUDE" ".hooks //= {} | $STRIP
     | reduce ($CLAUDE_EVENTS) as \$k (.; .hooks[\$k] += [{hooks:[{type:\"command\",command:\"$CMD claude\",async:true}]}])
     | .hooks.SessionEnd += [{hooks:[{type:\"command\",command:\"$CMD claude\",timeout:1}]}]"
@@ -47,8 +50,8 @@ install() {
   cat <<MSG
 done. Next:
   - Claude Code: hooks apply to new sessions.
-  - Codex: open /hooks once in a Codex TUI and trust the new agent-monitor entries (untrusted hooks are skipped).
-  - Check:  agent-monitor status   (after one agent turn inside cmux)
+  - Codex: open /hooks once in a Codex TUI and trust the new cmon entries (untrusted hooks are skipped).
+  - Check:  cmon status   (after one agent turn inside cmux)
 MSG
 }
 

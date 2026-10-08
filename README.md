@@ -1,4 +1,4 @@
-# cmux agent monitor
+# cmon — Cmux agent MONitor
 
 Per-workspace (or per-workspace-group) "all AI agents finished / input needed"
 notifications for cmux, driven by Claude Code and Codex hooks. No daemon: every
@@ -17,31 +17,31 @@ workspace's and group's combined state instead (see Related cmux features).
 
 ```
 install.sh [uninstall [--purge]]        install / remove the symlink and hook entries
-bin/agent-monitor hook <claude|codex>   hook command (reads hook JSON on stdin)
-bin/agent-monitor status                print the group/workspace tree once
-bin/agent-monitor watch                 keep the tree on screen, redraw on each hook event
+bin/cmon hook <claude|codex>   hook command (reads hook JSON on stdin)
+bin/cmon status                print the group/workspace tree once
+bin/cmon watch                 keep the tree on screen, redraw on each hook event
 test/test_agent_monitor.py              self-check: python3 test/test_agent_monitor.py
 test/test_install.sh                    self-check: bash test/test_install.sh
 ```
 
-State dir: `~/.cmuxterm/agent-monitor/` (`state.json` plus a lock file; override
-with `AGENT_MONITOR_DIR`). Nothing grows: every hook call rewrites `state.json`
+State dir: `~/.cmuxterm/cmon/` (`state.json` plus a lock file; override
+with `CMON_DIR`). Nothing grows: every hook call rewrites `state.json`
 pruned to the workspaces and groups cmux currently reports.
 
 ## Install
 
 ```
-git clone <this repo> && cd cmux-hey
-./install.sh              # link ~/.local/bin/agent-monitor, add hooks to Claude Code and Codex
+git clone <this repo> && cd cmon
+./install.sh              # link ~/.local/bin/cmon, add hooks to Claude Code and Codex
 ./install.sh uninstall    # remove them again (--purge also deletes the state dir)
 ```
 
-macOS and `jq` are required. The script links `bin/agent-monitor` into
+macOS and `jq` are required. The script links `bin/cmon` into
 `~/.local/bin`, then merges hook entries into `~/.claude/settings.json` and
 `~/.codex/hooks.json`, keeping every other entry and backing each file up as
 `<file>.bak-<timestamp>` before writing. Re-running it is a no-op.
 
-What it registers (all with the command `~/.local/bin/agent-monitor hook <src>`):
+What it registers (all with the command `~/.local/bin/cmon hook <src>`):
 
 | agent | events | note |
 | --- | --- | --- |
@@ -51,12 +51,17 @@ What it registers (all with the command `~/.local/bin/agent-monitor hook <src>`)
 Codex skips untrusted hooks: after installing, open `/hooks` once in a Codex TUI
 and trust the new entries.
 
+Moving or renaming the clone later breaks the symlink; run `./install.sh` again
+from the new location. Upgrading from the pre-rename `agent-monitor` install is
+handled by the same command (old symlink, hook entries and state dir are
+replaced; Codex asks to trust the renamed entries again).
+
 ## Inspect
 
-Nothing has to run. `agent-monitor status` prints a tree: each workspace group
+Nothing has to run. `cmon status` prints a tree: each workspace group
 with its aggregate state, its workspaces (name, state, sidebar lane), and under
 each workspace its agent sessions (teammate name when the transcript carries
-one, otherwise the session id prefix; source; status). `agent-monitor watch` keeps that tree in the terminal and redraws it
+one, otherwise the session id prefix; source; status). `cmon watch` keeps that tree in the terminal and redraws it
 whenever a hook updates the state (kqueue on the state dir, zero CPU while
 idle); Ctrl-C to stop.
 
@@ -121,7 +126,7 @@ per-group "all agents finished" signal:
   documented trigger is `agent.needs_input`. Rules act on one event and keep
   no state, so aggregation still needs an external script. Not present in
   0.64.22 (`cmux automation` is unknown) nor named in the 0.65.0 release notes.
-  Once available, a rule on `agent.hook.*` with `run: agent-monitor hook ...`
+  Once available, a rule on `agent.hook.*` with `run: cmon hook ...`
   could replace the Claude/Codex hook entries this tool installs, if those
   events are exposed as triggers.
 - **Agents panel** (custom sidebar `panel-subagents`, data context
