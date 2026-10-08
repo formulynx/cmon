@@ -81,9 +81,8 @@ workspace, so "idle" means all of them are idle.
 
 - cmux keeps one unread notification per surface; a second notification within
   seconds replaces the first.
-- A Codex launched through `codex app-server` / `codex --remote` (xbb `--wang`
-  reviewer) runs hooks in the server process; verify it logs events before
-  relying on it.
+- A Codex launched through `codex app-server` / `codex --remote` runs hooks in
+  the server process; verify it logs events before relying on it.
 - A crashed agent is removed at the next hook event from any session, when its
   pid is found dead. A user interrupt (Esc) emits no hook, so a session stays
   `running` until its next event.
