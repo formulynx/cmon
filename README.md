@@ -4,6 +4,17 @@ Per-workspace (or per-workspace-group) "all AI agents finished / input needed"
 notifications for cmux, driven by Claude Code and Codex hooks. No daemon: every
 hook invocation folds its event into a state file and acts on transitions.
 
+## Why a separate tool
+
+cmux's own agent notifications are per session: a turn-complete banner when
+one Claude or Codex process stops, a permission prompt, an idle reminder. They
+have no view across the sessions that share a workspace, so an orchestrator
+that stops to wait for its teammates is reported as "finished" while the
+teammates are still working, and a Codex pane in the same workspace is not
+counted at all. There is also no aggregation per workspace group. This tool
+keeps one state table for every agent session on the machine and reports the
+workspace's and group's combined state instead (see Related cmux features).
+
 ```
 install.sh [uninstall [--purge]]        install / remove the symlink and hook entries
 bin/agent-monitor hook <claude|codex>   hook command (reads hook JSON on stdin)
@@ -88,3 +99,35 @@ workspace, so "idle" means all of them are idle.
   `running` until its next event.
 - Each hook call costs about 0.1 s (python startup); hooks are async so the
   agent is not delayed.
+
+## Related cmux features
+
+Checked against the cmux docs on `main` (agent-hooks, notifications, feed,
+events, automations, workspace-groups, subagents-panel-plan, cmux.schema.json)
+with cmux 0.64.22 installed. None of them provides a per-workspace or
+per-group "all agents finished" signal:
+
+- **`notifications.*` settings** (`agentTurnComplete` with `whenIdle`,
+  `agentIdleReminder`, `agentPermissionPrompt`,
+  `automation.suppressSubagentNotifications`): per session, driven by the hooks
+  the cmux wrappers inject. `whenIdle` only holds the banner while that
+  session's own background tasks run.
+- **`notifications.hooks`**: shell hooks that rewrite an outgoing notification's
+  effects (banner, sound, reorder, command). They receive `agent.category`
+  (`turn-complete` / `needs-permission` / `idle-reminder`) and `pending`, and
+  can filter, but never originate, a notification.
+- **Automations** (`~/.cmuxterm/automations.json`, `cmux automation ...`):
+  event-bus rules with `notify` / `rpc` / `run` / `webhook` actions; the
+  documented trigger is `agent.needs_input`. Rules act on one event and keep
+  no state, so aggregation still needs an external script. Not present in
+  0.64.22 (`cmux automation` is unknown) nor named in the 0.65.0 release notes.
+  Once available, a rule on `agent.hook.*` with `run: agent-monitor hook ...`
+  could replace the Claude/Codex hook entries this tool installs, if those
+  events are exposed as triggers.
+- **Agents panel** (custom sidebar `panel-subagents`, data context
+  `workspaces[i].agents`): per-workspace list with working / idle / ended
+  counts, display only, no notification; Codex teams hierarchy deferred.
+- **Workspace groups**: structure and placement only, no aggregated state,
+  hooks, or events.
+- **`cmux events`**: `agent.hook.<Event>` and `feed.item.*` exist, but no
+  "all idle" or "status changed" event.
