@@ -1,0 +1,283 @@
+#!/usr/bin/python3
+"""agent-monitor: per-cmux-workspace "all agents finished / input needed" notifier.
+
+No daemon. Each Claude Code / Codex hook invocation runs `agent-monitor hook <src>`,
+which folds the event into ~/.cmuxterm/agent-monitor/state.json under a file lock,
+reconciles every known workspace and workspace group against cmux, and runs the
+`cmux notify` / `cmux workspace status set` commands for whatever changed.
+`agent-monitor status` prints the current tree; `agent-monitor watch` keeps it
+on screen and redraws on each hook event (kqueue, no polling).
+
+Session status: running | waiting (Stop with non-teammate background work) |
+needs_input (AskUserQuestion / ExitPlanMode / PermissionRequest) | idle.
+Workspace state: needs_input > running > idle > none. A `waiting` session only
+counts as running while some other session in the same set is running.
+"""
+import fcntl
+import json
+import os
+import re
+import select
+import subprocess
+import sys
+import time
+import unicodedata
+
+DIR = os.environ.get("AGENT_MONITOR_DIR", os.path.expanduser("~/.cmuxterm/agent-monitor"))
+CMUX = os.environ.get("CMUX_BUNDLED_CLI_PATH", "cmux")
+INPUT_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+LANE = {"needs_input": "needs-attention", "running": "working", "idle": "done", "none": "auto"}
+CMUX_TTL = 60
+
+
+# ---------------------------------------------------------------- reducer
+
+def reduce(sessions, ev):
+    """Apply one hook event to the session table (mutates). Stale events are ignored."""
+    sid, e = ev.get("session"), ev.get("event")
+    if not sid or not e:
+        return
+    s = sessions.get(sid)
+    if s and ev.get("seq", 0) < s.get("seq", 0):
+        return  # async hooks race for the lock; seq is the hook's start time
+    if e == "SessionEnd":
+        sessions.pop(sid, None)
+        return
+    if s is None:
+        s = sessions[sid] = {"ws": ev.get("ws"), "src": ev.get("src"), "status": "idle"}
+    s.update(ws=ev.get("ws") or s["ws"], seq=ev.get("seq", 0), ts=ev.get("ts"))
+    if ev.get("pid"):
+        s["pid"] = ev["pid"]
+    if ev.get("name"):
+        s["name"] = ev["name"]
+    if e in ("UserPromptSubmit", "PostToolUse"):
+        s["status"] = "running"
+    elif e == "PreToolUse":
+        s["status"] = "needs_input" if ev.get("tool") in INPUT_TOOLS else "running"
+    elif e == "PermissionRequest":
+        s["status"] = "needs_input"
+    elif e == "Stop":
+        s["status"] = "waiting" if ev.get("bg") else "idle"
+
+
+def ws_state(sessions, ws_ids):
+    sts = [s["status"] for s in sessions.values() if s["ws"] in ws_ids]
+    if not sts:
+        return "none"
+    if "needs_input" in sts:
+        return "needs_input"
+    if "running" in sts:
+        return "running"
+    return "idle"  # only idle/waiting left: nothing can wake a waiter but another session
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def drop_dead(sessions):
+    """Remove sessions whose agent process (the hook's parent) is gone."""
+    for sid in [k for k, s in sessions.items() if s.get("pid") and not alive(s["pid"])]:
+        del sessions[sid]
+
+
+# ---------------------------------------------------------------- cmux
+
+def cmux(*args):
+    try:
+        return subprocess.run([CMUX, *args], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("cmux %s: %s" % (" ".join(args), exc), file=sys.stderr)
+        return ""
+
+
+def refresh(state, force=False):
+    """Cache {groups: [[name, anchor, members]], names: {ws: title}} for CMUX_TTL seconds."""
+    c = state.get("cmux") or {}
+    if not force and time.time() - c.get("ts", 0) < CMUX_TTL:
+        return c
+    try:
+        gs = json.loads(cmux("rpc", "workspace.group.list", "{}"))["groups"]
+        ws = json.loads(cmux("--json", "workspace", "list"))["workspaces"]
+        c = {"groups": [[g["name"], g["anchor_workspace_id"], g["member_workspace_ids"]] for g in gs],
+             "names": {w["id"]: w["title"] for w in ws}}
+    except (ValueError, KeyError, TypeError):
+        c = {"groups": c.get("groups", []), "names": c.get("names", {})}
+    c["ts"] = time.time()
+    state["cmux"] = c
+    return c
+
+
+def targets(state):
+    """[(notify_ws, member_ids)] : every group, plus each ungrouped workspace on its own."""
+    c = refresh(state)
+    out = [(anchor, members) for _, anchor, members in c["groups"]]
+    grouped = {w for _, _, ms in c["groups"] for w in ms}
+    known = set(c["names"]) | {s["ws"] for s in state["sessions"].values()}
+    out += [(w, [w]) for w in known if w not in grouped]
+    return out
+
+
+def reconcile(state):
+    """Prune state to workspaces that exist, diff lanes/aggregates, return cmux argv list."""
+    sessions = state["sessions"]
+    c = refresh(state)
+    if c["names"]:  # ponytail: trust the cache; a workspace closed <60 s ago lingers until next refresh
+        for sid in [k for k, s in sessions.items() if s["ws"] not in c["names"]]:
+            del sessions[sid]
+    lanes, last = state.setdefault("lanes", {}), state.setdefault("last", {})
+    cmds = []
+    tg = targets(state)
+    live_ws = {w for _, ms in tg for w in ms}
+    for w in [w for w in lanes if w not in live_ws]:
+        del lanes[w]
+    for w in [w for w in last if w not in {a for a, _ in tg}]:
+        del last[w]
+    for w in live_ws:
+        lane = LANE[ws_state(sessions, {w})]
+        if lanes.get(w) != lane:
+            lanes[w] = lane
+            cmds.append(["workspace", "status", "set", lane, "--workspace", w])
+    for anchor, members in tg:
+        new, old = ws_state(sessions, set(members)), last.get(anchor)
+        if new == old:
+            continue
+        last[anchor] = new
+        n = sum(1 for s in sessions.values() if s["ws"] in members and s["status"] == new)
+        if new == "needs_input":
+            cmds.append(["notify", "--title", "Input needed",
+                         "--body", "%d agent session(s) waiting for you" % n, "--workspace", anchor])
+        elif new == "idle" and old in ("running", "needs_input"):
+            cmds.append(["notify", "--title", "All agents finished",
+                         "--body", "No agent work in flight", "--workspace", anchor])
+    return cmds
+
+
+# ---------------------------------------------------------------- commands
+
+def load():
+    try:
+        with open(os.path.join(DIR, "state.json")) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        state = {}
+    state.setdefault("sessions", {})
+    state.pop("groups", None)  # key from the pre-reconcile layout
+    return state
+
+
+def save(state):
+    path = os.path.join(DIR, "state.json")
+    with open(path + ".tmp", "w") as f:
+        json.dump(state, f)
+    os.replace(path + ".tmp", path)
+
+
+def agent_name(path):
+    """Teammate name from the head of a Claude transcript (`agentName`), else None."""
+    try:
+        with open(path, "rb") as f:
+            m = re.search(rb'"agentName":"([^"]+)"', f.read(32768))
+        return m.group(1).decode() if m else None
+    except OSError:
+        return None
+
+
+def hook(src):
+    seq = time.time_ns()
+    try:
+        raw = json.load(sys.stdin)
+    except ValueError:
+        raw = {}
+    bg = [t for t in raw.get("background_tasks") or [] if t.get("type") != "teammate"]
+    ev = {"seq": seq, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "src": src,
+          "ws": os.environ.get("CMUX_WORKSPACE_ID"), "session": raw.get("session_id"),
+          "event": raw.get("hook_event_name"), "tool": raw.get("tool_name"), "pid": os.getppid(),
+          "bg": len(bg) + len(raw.get("session_crons") or [])}
+    if not ev["ws"] or not ev["session"]:
+        return
+    if ev["event"] in ("SessionStart", "UserPromptSubmit") and raw.get("transcript_path"):
+        ev["name"] = agent_name(raw["transcript_path"])
+    os.makedirs(DIR, exist_ok=True)
+    with open(os.path.join(DIR, "lock"), "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        state = load()
+        reduce(state["sessions"], ev)
+        drop_dead(state["sessions"])
+        cmds = reconcile(state)
+        save(state)
+    for args in cmds:  # side effects after the lock is released
+        cmux(*args)
+
+
+def pad(text, width):
+    cols = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+    return text + " " * max(width - cols, 0)
+
+
+def status():
+    """Tree of workspace groups -> workspaces -> sessions, by name. Reads the cache only."""
+    state = load()
+    sessions, lanes = state["sessions"], state.get("lanes", {})
+    drop_dead(sessions)
+    c = refresh(state)
+    names = c["names"]
+    trees = [(name, [w for w in ms if w != anchor], ms) for name, anchor, ms in c["groups"]]
+    grouped = {w for _, _, ms in trees for w in ms}
+    rest = [w for w in list(names) + sorted({s["ws"] for s in sessions.values()} - set(names)) if w not in grouped]
+    if rest:
+        trees.append(("(ungrouped)", rest, rest))
+    for name, members, all_ids in trees:
+        print("%s  [%s]" % (name, ws_state(sessions, set(all_ids))))
+        for i, w in enumerate(members):
+            last_ws = i == len(members) - 1
+            print("  %s %s %-11s %s" % ("└─" if last_ws else "├─", pad(names.get(w, w[:8]), 24),
+                                        ws_state(sessions, {w}), lanes.get(w, "-")))
+            ss = [(sid, s) for sid, s in sessions.items() if s["ws"] == w]
+            for j, (sid, s) in enumerate(ss):
+                print("  %s   %s %s  %s  %s" % ("  " if last_ws else "│ ", "└─" if j == len(ss) - 1 else "├─",
+                                              s.get("name") or sid[:8], s["src"], s["status"]))
+
+
+def watch():
+    """Redraw whenever a hook rewrites state.json (kqueue on the state dir, no polling)."""
+    os.makedirs(DIR, exist_ok=True)
+    fd = os.open(DIR, os.O_RDONLY | getattr(os, "O_EVTONLY", 0))
+    kq = select.kqueue()
+    ev = select.kevent(fd, select.KQ_FILTER_VNODE, select.KQ_EV_ADD | select.KQ_EV_CLEAR, select.KQ_NOTE_WRITE)
+    while True:
+        sys.stdout.write("\x1b[H\x1b[2J")
+        status()
+        print("\n" + time.strftime("%H:%M:%S") + "  watching " + DIR, flush=True)
+        kq.control([ev], 1, 60)  # wake on state.json replace, or every 60 s to age out dead agents
+        time.sleep(0.2)          # one hook call touches the dir twice; coalesce
+        kq.control(None, 8, 0)
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if cmd == "hook":
+        try:
+            hook(sys.argv[2] if len(sys.argv) > 2 else "claude")
+        except Exception as exc:  # never fail the agent's hook
+            print("agent-monitor: %r" % exc, file=sys.stderr)
+        print("{}")
+    elif cmd == "status":
+        status()
+    elif cmd == "watch":
+        try:
+            watch()
+        except KeyboardInterrupt:
+            pass
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()
