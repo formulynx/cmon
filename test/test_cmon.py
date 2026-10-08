@@ -103,10 +103,12 @@ def test_reducer_scoping_and_liveness():
 
 def test_hook_transitions_and_pruning():
     d = tempfile.mkdtemp(); env = stub(d)
-    tp = os.path.join(d, "t.jsonl"); open(tp, "w").write('{"type":"x"}\n{"agentName":"xbbr-T01","type":"user"}\n')
+    tp = os.path.join(d, "t.jsonl"); open(tp, "w").write('{"type":"x"}\n')  # name not written yet
     fire(env, {"session_id": "h1", "hook_event_name": "UserPromptSubmit", "transcript_path": tp})
-    fire(env, {"session_id": "h1", "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion"})
-    fire(env, {"session_id": "h1", "hook_event_name": "Stop", "background_tasks": [{"type": "teammate"}], "session_crons": []})
+    assert state(d)["sessions"]["h1"].get("name") is None and state(d)["sessions"]["h1"]["name_tries"] == 1
+    open(tp, "a").write('{"agentName":"xbbr-T01","type":"user"}\n')  # lands after the first hook (async race)
+    fire(env, {"session_id": "h1", "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "transcript_path": tp})
+    fire(env, {"session_id": "h1", "hook_event_name": "Stop", "background_tasks": [{"type": "teammate"}], "session_crons": [], "transcript_path": tp})
     fire(env, {"session_id": "zz", "hook_event_name": "UserPromptSubmit"}, ws="Z")  # unknown workspace: pruned
     c = calls(d)
     assert "workspace status set working --workspace W" in c
@@ -115,7 +117,7 @@ def test_hook_transitions_and_pruning():
     assert "workspace status set done --workspace W" in c
     assert c.count("rpc workspace.group.list") == 1, "cmux lists cached across hooks"
     st = state(d)
-    assert st["sessions"]["h1"]["name"] == "xbbr-T01", "teammate name read from transcript"
+    assert st["sessions"]["h1"]["name"] == "xbbr-T01", "teammate name picked up on a later event"
     assert "zz" not in st["sessions"] and "Z" not in st["lanes"], "state pruned to existing workspaces"
     assert set(st["lanes"]) <= {"A", "W", "Q"} and set(st["last"]) == {"A", "Q"}
     assert sorted(os.listdir(d)) == ["calls", "cmux", "lock", "state.json", "t.jsonl"], "no audit log, no leftovers"

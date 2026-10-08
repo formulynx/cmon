@@ -29,6 +29,7 @@ CMUX = os.environ.get("CMUX_BUNDLED_CLI_PATH", "cmux")
 INPUT_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 LANE = {"needs_input": "needs-attention", "running": "working", "idle": "done", "none": "auto"}
 CMUX_TTL = 60
+NAME_TRIES = 8  # hook events per session spent looking for a teammate name in the transcript
 
 
 # ---------------------------------------------------------------- reducer
@@ -51,6 +52,8 @@ def reduce(sessions, ev):
         s["pid"] = ev["pid"]
     if ev.get("name"):
         s["name"] = ev["name"]
+    elif "name" in ev:
+        s["name_tries"] = s.get("name_tries", 0) + 1  # transcript not yet named; retry a few events
     if e in ("UserPromptSubmit", "PostToolUse"):
         s["status"] = "running"
     elif e == "PreToolUse":
@@ -233,8 +236,9 @@ def hook(src):
         with open(os.path.join(DIR, "last-unattributed.json"), "w") as f:
             json.dump(dict(ev, cwd=raw.get("cwd"), env_keys=sorted(k for k in os.environ if k.startswith("CMUX_"))), f)
         return
-    if ev["event"] in ("SessionStart", "UserPromptSubmit") and raw.get("transcript_path"):
-        ev["name"] = agent_name(raw["transcript_path"])
+    known = warm["sessions"].get(ev["session"], {})
+    if raw.get("transcript_path") and not known.get("name") and known.get("name_tries", 0) < NAME_TRIES:
+        ev["name"] = agent_name(raw["transcript_path"])  # teammate names land in the transcript after the first events
     refresh(warm)  # query cmux (when the cache is stale) before taking the lock
     with open(os.path.join(DIR, "lock"), "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
